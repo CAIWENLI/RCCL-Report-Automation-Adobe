@@ -612,7 +612,7 @@ options(java.parameters = "-Xmx8g")
 library("RJDBC")
 library(RJDBC)
 drv <- JDBC("oracle.jdbc.OracleDriver",classPath="C:/users/7005773/Downloads/ojdbc6.jar")
-con.oracle <- dbConnect(drv, "jdbc:oracle:thin:@//dmmktgp_exa.rccl.com:1689/DMMKTGP.RCCL.COM", "DIGITALBI","PH4r}g`Qhh?N8S@<,)9Um:LjJB")
+con.oracle <- dbConnect(drv, "jdbc:oracle:thin:@//dmmktgp_exa.rccl.com:1689/DMMKTGP.RCCL.COM", "xx","xx")
 
 pcp.transactional.level <- paste("SELECT T.SHIP_CODE,
        T.SAIL_DATE,
