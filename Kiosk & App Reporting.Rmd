@@ -1,0 +1,659 @@
+---
+title: "Kiosk & App Reporting"
+author: "Caiwen Li"
+date: "10/15/2019"
+output: html_document
+---
+## How to run this report? 
+
+# Step 1: make sure your adobe token and ps are correct and Azure database user & ps are correct  
+# Step 2: Run all the chunks except the last 2 chunks (Write data & Dream query table)
+# Step 3: Change the saving path to your desktop path and run "write all data" chunk
+# Step 3: Check your path whether have all the data saved 
+# Step 4: Open the tableau flow updated the files path to yours and run the flow
+# Step 5: Use tableau server log into the report and refrensh the report (make sure you have the access to this report)
+# Step 6: Double check no numbers are off in the report and send to the product team (DCX)
+
+```{r setup, include=FALSE}
+rm(list=ls())
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r adobe connection}
+library(RSiteCatalyst)
+library(RPostgreSQL)
+library(dplyr)
+library(dbplyr)
+library(tidyr)
+library(data.table)
+library(lubridate)
+library(reshape2)
+library(stringr)
+SCAuth("caiwenli@rccl.com:RCCI", "3e7a72d82de775fb55c31f4dcc51b4e0")
+```
+
+```{r date setting}
+excalibur.production <- "rcciexcaliburprod"
+start.date <- as.character(Sys.Date() - wday(Sys.Date())- 83)
+end.date <- as.character(Sys.Date() - wday(Sys.Date()))
+```
+
+```{r kiosk ship segments building}
+# s300006910_5ac248b259161d7157e75c01 Kiosk Only
+# s300006910_59cbc683e3d26c79ed095ac0 excluding appstarting
+# s300006910_5aabf2d3de3c976aada2a8d8 Company Sailing Visitors
+# Last segment is the ship IP list segment
+Symphony <- c("s300006910_5ac248b259161d7157e75c01","s300006910_59cbc683e3d26c79ed095ac0","s300006910_5aabf2d3de3c976aada2a8d8","s300006910_5ab577e1c477fc1701401763")
+Harmony <- c("s300006910_5ac248b259161d7157e75c01","s300006910_59cbc683e3d26c79ed095ac0","s300006910_5aabf2d3de3c976aada2a8d8","s300006910_5bf461955fe71e04abe23a0b")
+Mariner <- c("s300006910_5ac248b259161d7157e75c01","s300006910_59cbc683e3d26c79ed095ac0","s300006910_5aabf2d3de3c976aada2a8d8","s300006910_5b520e794ecbca71d1f54df4")
+Edge <- c("s300006910_5ac248b259161d7157e75c01","s300006910_59cbc683e3d26c79ed095ac0","s300006910_5aabf2d3de3c976aada2a8d8","s300006910_5beef7c04618f61c4c0ebabb")
+Quantum <- c("s300006910_5ac248b259161d7157e75c01","s300006910_59cbc683e3d26c79ed095ac0","s300006910_5aabf2d3de3c976aada2a8d8","s300006910_5c36662f9e1245499f62e70c")
+Spectrum <- c("s300006910_5ac248b259161d7157e75c01","s300006910_59cbc683e3d26c79ed095ac0","s300006910_5aabf2d3de3c976aada2a8d8","s300006910_5cac9e5f9e12451d042e5056")
+Ovation <- c("s300006910_5ac248b259161d7157e75c01","s300006910_59cbc683e3d26c79ed095ac0","s300006910_5aabf2d3de3c976aada2a8d8","s300006910_5ceec3dfd4e3251e3d21e545")
+Anthem <- c("s300006910_5ac248b259161d7157e75c01","s300006910_59cbc683e3d26c79ed095ac0","s300006910_5aabf2d3de3c976aada2a8d8","s300006910_5cde03e23217c900b1b74290")
+
+kiosk.ship.segment.list <- as.list.data.frame(cbind(Symphony,Harmony,Mariner,Edge,Quantum,Spectrum,Ovation,Anthem))
+
+```
+
+```{r kiosk ship all metrics pull}
+kiosk.ship.events.total <- NULL
+for (i in 1: ncol(kiosk.ship.segment.list))
+{
+kiosk.ship.events <- QueueOvertime(excalibur.production,
+                                        start.date,
+                                        end.date,
+                                        metrics  = c("event139"
+                                                 ,"event182"
+                                                 ,"event183"
+                                                 ,"event292"
+                                                 ,"event293"
+                                                 ,"event294"
+                                                 ,"event296"
+                                                 ,"event297"
+                                                 ,"event298"
+                                                 ,"event299"
+                                                 ,"event300"
+                                                 ,"event350"
+                                                 ,"event353"
+                                                 ,"event354"
+                                                 ,"event355"
+                                                 ,"event356"
+                                                 ,"event357"
+                                                 ,"event359"
+                                                 ,"event360"
+                                                 ,"event402"
+                                                 ,"event403"
+                                                 ,"event406"
+                                                 ,"event407"
+                                                 ,"event150"
+                                                 ,"event361"
+                                                 ,"event138" ## Kiosk SeaPass Login (e138)
+                                                 ,"event181" ## Kiosk Welcome Login Sea Pass (e181)
+                                                 ,"event351" ## Kiosk Welcome Screen Tap (e351)
+                                                 ,"event352" ## Kiosk Manual Login (e352)
+                                                 ,"event358" ## Kiosk "Reserve Now" (e358)
+                                                 ),
+                                    max.attempts = 1000000,
+                                    date.granularity = "day",
+                                    segment.id = kiosk.ship.segment.list[,i]) 
+    kiosk.ship.events.total <- rbind(kiosk.ship.events.total, kiosk.ship.events)
+}
+
+# Fix the segment name and get ship name
+ship.name <- as.data.frame(unlist(lapply(strsplit(as.character(kiosk.ship.events.total$segment.name), "AND"), '[[', 4)))
+colnames(ship.name) <- c("ship.name")
+ship.name.fix <- as.data.frame(unlist(lapply(strsplit(as.character(ship.name$ship.name), " "), '[[', 2)))
+colnames(ship.name.fix) <- c("ship.name")
+
+# Fix date type & select the columns 
+kiosk.ship.events.total <- cbind(ship.name.fix, kiosk.ship.events.total)
+kiosk.ship.events.total$datetime <- as.Date(kiosk.ship.events.total$datetime)
+kiosk.ship.events.total <- kiosk.ship.events.total[,c(1,2,3,5,9:38)]
+
+colnames(kiosk.ship.events.total) <- c("Ship Code"
+                                      ,"Product Booking Date"
+                                      ,"Product Booking Day"
+                                      ,"Product Booking Month"
+                                      ,"Kiosk SeaPass Unavailable (e139)"
+                                      ,"Kiosk Login Incorrect Details Error (e182)" ### Stopped using since May 2019
+                                      ,"Kiosk Res Link Incorrect Details Error (e183)"
+                                      ,"Edit Day (e292)"
+                                      ,"Edit Guests (e293)"
+                                      ,"Edit Product (e294)"
+                                      ,"Select Time (e296)"
+                                      ,"See Others Products(e297)"
+                                      ,"Select Guests (e298)"
+                                      ,"Select Day (e299)"
+                                      ,"Booking Errors (e300)"
+                                      ,"View Terms & Conditions (e350)"
+                                      ,"Kiosk Exit (e353)"
+                                      ,"Kiosk View Booked Excursions (e354)"
+                                      ,"Kiosk Day Picker (e355)"
+                                      ,"Kiosk Activity Overview Tap (356)"
+                                      ,"Kiosk Back Arrow (e357)"
+                                      ,"Kiosk Logout Continue Booking (e359)"
+                                      ,"Kiosk Logout Done Booking (e360)"
+                                      ,"Booking Cancel Step 1 (e402)"
+                                      ,"Booking Cancel Step 2 (e403)"
+                                      ,"Booking Keep Res. (e406)"
+                                      ,"Booking Cannot Cancel Client Side (e407)"
+                                      ,"ReservationLinkGuests (e150)"
+                                      ,"Kiosk Auto Log Out (e361)"
+                                      ,"Kiosk SeaPass Login (e138)"
+                                      ,"Kiosk Welcome Login Sea Pass (e181)"
+                                      ,"Kiosk Welcome Screen Tap (e351)"
+                                      ,"Kiosk Manual Login (e352)"
+                                      ,"Kiosk Reserve Now (e358)"
+                                      )
+
+kiosk.ship.events.total <- kiosk.ship.events.total %>% 
+    mutate(`Total Logins` = `Kiosk SeaPass Login (e138)`+ `Kiosk Manual Login (e352)` + `Kiosk Welcome Login Sea Pass (e181)`,
+           `Total Welcome Page Views` = `Kiosk Welcome Login Sea Pass (e181)`+ `Kiosk Welcome Screen Tap (e351)` + `Kiosk Manual Login (e352)` + `Kiosk SeaPass Login (e138)`)
+
+kiosk.ship.total <- NULL
+for (i in 1: ncol(kiosk.ship.segment.list))
+{
+  kiosk.ship.events <- QueueTrended(excalibur.production,
+                                    start.date,
+                                    end.date,
+                                    metrics  = c("revenue"
+                                                 ,"orders"
+                                                 ,"units"
+                                                 ,"pageviews"
+                                                 ,"cm300006910_5dcae679d7e89d405a28b697" ## Product Views
+                                    ),
+                                    c("product"),
+                                    top = 50000,
+                                    date.granularity = "day",
+                                    segment.id = kiosk.ship.segment.list[,i],
+                                    classification = "Product Category") 
+  kiosk.ship.total <- rbind(kiosk.ship.total, kiosk.ship.events)
+}
+kiosk.ship.total$datetime <- as.Date(kiosk.ship.total$datetime)
+kiosk.ship.total <- kiosk.ship.total %>% 
+  filter(!name %in% "::unspecified::") 
+
+ship.name <- as.data.frame(unlist(lapply(strsplit(as.character(kiosk.ship.total$segment.name), "AND"), '[[', 4)))
+colnames(ship.name) <- c("ship.name")
+
+ship.name.fix <- as.data.frame(unlist(lapply(strsplit(as.character(ship.name$ship.name), " "), '[[', 2)))
+colnames(ship.name.fix) <- c("ship.name")
+kiosk.ship.total <- cbind(ship.name.fix, kiosk.ship.total)
+
+kiosk.ship.total <- kiosk.ship.total[,c(1,2,3,5:9)]
+
+colnames(kiosk.ship.total) <- c("Ship Code"
+                                ,"Product Booking Date"
+                                ,"Product Cate"
+                                ,"Revenue"
+                                ,"Orders"
+                                ,"Units"
+                                ,"Page Views"
+                                ,"Product Views"
+                                )   
+
+kiosk.ship.total$key <- paste0(kiosk.ship.total$`Product Booking Date`, kiosk.ship.total$`Ship Code`, sep = "")
+kiosk.ship.events.total$key <- paste0(kiosk.ship.events.total$`Product Booking Date`, kiosk.ship.events.total$`Ship Code`, sep = "")
+
+kiosk.ship.events.all <- kiosk.ship.total %>% 
+  inner_join(kiosk.ship.events.total, by = "key")
+
+kiosk.ship.events.all$key <- NULL
+kiosk.ship.events.all$`Ship Code.x` <- NULL
+kiosk.ship.events.all$`Product Booking Date.x` <- NULL
+
+## Check on this next week
+kiosk.ship.events.all <- kiosk.ship.events.all[,c(8:10,7,1,2:6,11:42)] %>% 
+  mutate(`Product Booking Day` = weekdays(`Product Booking Date.y`),
+         `Product Booking Wk` = floor_date(as.Date(`Product Booking Date.y`, "%m/%d/%Y"), unit="week"))
+
+colnames(kiosk.ship.events.all)[1] <- "Product Booking Date"
+colnames(kiosk.ship.events.all)[4] <- "Ship Code"
+rm(kiosk.ship.total)
+```
+
+```{r kiosk fallout data pull}
+falloutpattern <- c("kiosk:welcome", "kioskshorex:listview", "kioskshorex:reservationwhosgoing", "kioskshorex:reservationproductbyvenue", "kioskshorex:reservationstatement")
+
+kiosk.fallout.total <- NULL
+for (i in 1: ncol(kiosk.ship.segment.list))
+{
+  kiosk.fallout <- QueueFallout(excalibur.production,
+                                start.date,
+                                end.date,
+                                metric = "pageviews",
+                                element = "page",
+                                falloutpattern,
+                                segment.id = kiosk.ship.segment.list[,i])
+  kiosk.fallout.total <- rbind(kiosk.fallout.total, kiosk.fallout)
+}
+
+ship.name <- as.data.frame(unlist(lapply(strsplit(as.character(kiosk.fallout.total$segment.name), "AND"), '[[', 4)))
+colnames(ship.name) <- c("ship.name")
+
+ship.name.fix <- as.data.frame(unlist(lapply(strsplit(as.character(ship.name$ship.name), " "), '[[', 2)))
+colnames(ship.name.fix) <- c("ship.name")
+kiosk.fallout.total <- cbind(ship.name.fix, kiosk.fallout.total)
+kiosk.fallout.total <- kiosk.fallout.total[,c(1,2,4)]
+
+kiosk.fallout.total$name <- gsub("kiosk:welcome", "Welcome Screen", kiosk.fallout.total$name)
+kiosk.fallout.total$name <- gsub("kioskshorex:listview", "Browse List", kiosk.fallout.total$name)
+kiosk.fallout.total$name <- gsub("kioskshorex:reservationwhosgoing", "Who's Going", kiosk.fallout.total$name)
+kiosk.fallout.total$name <- gsub("kioskshorex:reservationproductbyvenue", "Product by Venue", kiosk.fallout.total$name)
+kiosk.fallout.total$name <- gsub("kioskshorex:reservationstatement", "Checkout Page", kiosk.fallout.total$name)
+
+kiosk.fallout.total$pageviews <- as.character(kiosk.fallout.total$pageviews)
+```
+
+```{r app ship segments building}
+# s300006910_59c41d59c06c5c10c89f449d App Only
+# s300006910_59de69e94cfe090d7d6edecf Onship Only
+# Last segment is the ship IP list segment
+Adventure <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5b929acef73f23559bfd263b")
+Allure <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5bd20966be6bf235d072f0f2")
+Anthem <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5cde03e23217c900b1b74290")
+Brilliance <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5bae3a13e50ca00d616e1e26")
+Constellation <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5a37eb6d1d43f6274e1980b6")
+Edge <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5beef7c04618f61c4c0ebabb")
+Empress <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5cddfa99d48757449048e91d")
+Enchantment <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5a65f57601e823672540f285")
+Equinox <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5ba108de11a9b40d60e3c3d7")
+Grandeur <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5cde014cb8dcd954229f1316")
+Harmony <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5bf461955fe71e04abe23a0b")
+Independence <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5b929c7222fa995faeee4a9e")
+Liberty <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5bf463bc0725624af0b617bc")
+Majesty <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5bbcf4a4cfb2522b57b3d224")
+Mariner <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5b520e794ecbca71d1f54df4")
+Millennium <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5c3661517d03f6237a695ea9")
+Navigator <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5c59a25dc8976708f490ad3e")
+Oasis <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_59e4a689a5bb5773019e3f76")
+Ovation <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5ceec3dfd4e3251e3d21e545")
+Pursuit <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5c11383bb81a6c1660a4faff")
+Quantum <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5c36662f9e1245499f62e70c")
+Reflection <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5ab577805ef3a55946dce425")
+Rhapsody <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5cde04d4e445484643f500b0")
+Serenade <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5a3c3869535e3b166819b18f")
+Spectrum <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5cac9e5f9e12451d042e5056")
+Summit <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5c59a3f90d9f0c71f0777def")
+Symphony <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5ab577e1c477fc1701401763")
+Vision <- c("s300006910_59c41d59c06c5c10c89f449d", "s300006910_59de69e94cfe090d7d6edecf","s300006910_5c365c990d9f0c71f0ac9604")
+
+app.ship.segment.list <- as.list.data.frame(cbind(Adventure,Allure,Brilliance,Constellation,Edge,Enchantment,Equinox,Harmony,Independence,Majesty,Mariner,Millennium,Navigator,Oasis,Pursuit,Quantum,Reflection,Serenade,Spectrum,Summit,Symphony,Vision))
+
+```
+
+```{r app ship & product all metrics pull}
+app.ship.product.total <- NULL
+for (i in 1: ncol(app.ship.segment.list))
+{
+  app.ship.product <- QueueTrended(excalibur.production,
+                                   start.date,
+                                   end.date,
+                                   metrics  = c("revenue"
+                                                ,"orders"
+                                                ,"units"
+                                                ,"pageviews"
+                                                ,"uniquevisitors"
+                                                ,"visits"
+                                                ,"cm300006910_5dcae679d7e89d405a28b697" ## Product Views
+                                                ,"cm300006910_5dcad4e9cffa482fc832abc8" ## DCX Pages - Unique Visitor
+                                                ,"cm300006910_5dcad50c4252e93b18270dd3" ## DCX Pages - Visits
+                                                ,"cm300006910_5dcad63412ea55187d74c45f" ## Bookable - Product Views
+                                                ,"cm300006910_5dcad819b193a53c9b616c1f" ## Reserve Now Tap
+                                                ),
+                                   c("product"),
+                                   top = 50000,
+                                   max.attempts = 1000000,
+                                   date.granularity = "week",
+                                   segment.id = app.ship.segment.list[,i],
+                                   classification = "Product Category") 
+  app.ship.product.total <- rbind(app.ship.product.total, app.ship.product)
+}
+
+ship.name <- as.data.frame(unlist(lapply(strsplit(as.character(app.ship.product.total$segment.name), "AND"), '[[', 3)))
+colnames(ship.name) <- c("ship.name")
+ship.name.fix <- as.data.frame(unlist(lapply(strsplit(as.character(ship.name$ship.name), " "), '[[', 2)))
+colnames(ship.name.fix) <- c("ship.name")
+app.ship.product.total <- cbind(ship.name.fix, app.ship.product.total)
+app.ship.product.total$datetime <- as.Date(app.ship.product.total$datetime)
+
+app.ship.product.total <- app.ship.product.total[,c(1:3, 5:15)]
+
+colnames(app.ship.product.total) <- c("Ship Code"
+                                      ,"Product Booking Date"
+                                      ,"Product Cate"
+                                      ,"Revenue"
+                                      ,"Orders"
+                                      ,"Units"
+                                      ,"Page Views"
+                                      ,"Unique Visitor"
+                                      ,"Visits"
+                                      ,"Product Views"
+                                      ,"DCX - Unique Visitor"
+                                      ,"DCX - Visits"
+                                      ,"Bookable - Product Views"
+                                      ,"Reserve Now Tap")
+
+app.ship.product.total <- app.ship.product.total %>% 
+  filter(!`Product Cate` %in% "::unspecified::",
+         !`DCX - Visits` %in% 0) 
+
+app.ship.events.total <- NULL
+for (i in 1: ncol(app.ship.segment.list))
+{
+  app.ship.events <- QueueOvertime(excalibur.production,
+                                     start.date,
+                                     end.date,
+                                     metrics  = c("event150"
+                                                  ,"event292"
+                                                  ,"event293"
+                                                  ,"event294"
+                                                  ,"event296"
+                                                  ,"event297"
+                                                  ,"event298"
+                                                  ,"event299"
+                                                  ,"event300"
+                                                  ,"event310"
+                                                  ,"event311"
+                                                  ,"event350"
+                                                  ,"event372"
+                                                  ,"event402"
+                                                  ,"event414"
+                                                  ,"event415"
+                                                  ,"event416"
+                                                  ,"event417"
+                                                  ,"event487"
+                                                  ,"event488"
+                                                  ,"revenue"
+                                                  ,"orders"
+                                                  ,"units"
+                                                  ,"pageviews"
+                                                  ,"uniquevisitors"
+                                                  ,"visits"
+                                                  ,"totaltimespent"),
+                                     max.attempts = 1000000,
+                                     date.granularity = "day",
+                                     segment.id = app.ship.segment.list[,i]) 
+  app.ship.events.total <- rbind(app.ship.events.total, app.ship.events)
+}
+
+ship.name <- as.data.frame(unlist(lapply(strsplit(as.character(app.ship.events.total$segment.name), "AND"), '[[', 3)))
+colnames(ship.name) <- c("ship.name")
+ship.name.fix <- as.data.frame(unlist(lapply(strsplit(as.character(ship.name$ship.name), " "), '[[', 2)))
+colnames(ship.name.fix) <- c("ship.name")
+app.ship.events.total <- cbind(ship.name.fix, app.ship.events.total)
+app.ship.events.total$datetime <- as.Date(app.ship.events.total$datetime)
+app.ship.events.total <- app.ship.events.total[,c(1,2,3,5,9:35)]
+
+colnames(app.ship.events.total) <- c("Ship Code"
+                                     ,"Product Booking Date"
+                                     ,"Product Booking Day"
+                                     ,"Product Booking Month"
+                                     ,"ReservationLinkGuests (e150)"
+                                     ,"Edit Day (e292)"
+                                     ,"Edit Guests (e293)"
+                                     ,"Edit Product (e294)"
+                                     ,"Select Time (e296)"
+                                     ,"See Others Products(e297)"
+                                     ,"Select Guests (e298)"
+                                     ,"Select Day (e299)"
+                                     ,"Booking Errors (e300)"
+                                     ,"SubCategory/Filter Tap (e310)"
+                                     ,"Activity Overview Tap (e311)"
+                                     ,"View Terms & Conditions (e350)"
+                                     ,"Reserve Now (e372)"
+                                     ,"Booking Cancel Step 1 (e402)"
+                                     ,"Reservation Cancel Start (414)"
+                                     ,"Res Activity Tap (e415)"
+                                     ,"Booking Remove Guest Start (416)"
+                                     ,"removeGuestsConfirm (417)"
+                                     ,"Reservation Seating Preference (e487)"
+                                     ,"Add Payment Method (e488)"
+                                     ,"Revenue"
+                                     ,"Orders"
+                                     ,"Units"
+                                     ,"Page Views"
+                                     ,"Unique Visitor"
+                                     ,"Visits"
+                                     ,"Total Time Spent")
+```
+
+```{r app fallout data pull- booking funnel flow}
+app.funnel.total <- NULL
+for (i in 1: ncol(app.ship.segment.list))
+{
+  app.funnel <- QueueRanked(excalibur.production,
+                              start.date,
+                              end.date,
+                              metric = "pageviews",
+                              element = "page",
+                              search	 = c("reservationwhosgoing", "reservationselectday", "reservationproductbyvenue", "reservationstatement"),
+                              segment.id = app.ship.segment.list[,i])
+  app.funnel.total <- rbind(app.funnel.total, app.funnel)
+}
+
+ship.name <- as.data.frame(unlist(lapply(strsplit(as.character(app.funnel.total$segment.name), "AND"), '[[', 3)))
+colnames(ship.name) <- c("ship.name")
+
+ship.name.fix <- as.data.frame(unlist(lapply(strsplit(as.character(ship.name$ship.name), " "), '[[', 2)))
+colnames(ship.name.fix) <- c("ship.name")
+app.funnel.total <- cbind(ship.name.fix, app.funnel.total)
+app.funnel.total <- app.funnel.total[,c(1,2,4)]
+
+app.funnel.total <- app.funnel.total %>% 
+  separate(name, c("Product Cate", "Screen Name", sep = ":"))
+
+app.funnel.total <- app.funnel.total[,c(1:3,5)]
+app.funnel.total$pageviews <- as.character(app.funnel.total$pageviews)
+
+app.funnel.total$`Screen Name` <- gsub("reservationselectday", "Select Day", app.funnel.total$`Screen Name`)
+app.funnel.total$`Screen Name` <- gsub("reservationstatement", "Checkout Page", app.funnel.total$`Screen Name`)
+app.funnel.total$`Screen Name` <- gsub("reservationwhosgoing", "Who's Going", app.funnel.total$`Screen Name`)
+app.funnel.total$`Screen Name` <- gsub("reservationproductbyvenue", "Product by Venue", app.funnel.total$`Screen Name`)
+```
+
+```{r merge adobe data for overall numbers}
+kiosk.append <- kiosk.ship.events.all %>% 
+  mutate(Channel = "Kiosk")
+tbl_vars(kiosk.append)
+
+kiosk.append <- kiosk.append[,c(44,43,4:10,40)] %>% 
+  group_by(Channel, `Product Booking Wk`, `Ship Code`, `Product Cate`) %>% 
+  summarise(Revenue = sum(Revenue),
+            Orders = sum(Orders),
+            Units = sum(Units),
+            `Page Views` = sum(`Page Views`),
+            `Product Views` = sum(`Page Views`),
+            `Reserve Now` = sum(`Kiosk Reserve Now (e358)`))
+
+colnames(kiosk.append) <- c("Channel", "Product Booking Wk", "Ship Code", "Product Cate", "Revenue", "Orders", "Units", "Page Views", "Product Views", "Reserve Now")
+app.append <- app.ship.product.total %>% 
+  mutate(Channel = "App")
+
+app.append <- app.append[,c(15,2,1,3:7,10,14)]
+colnames(app.append) <- c("Channel", "Product Booking Wk", "Ship Code", "Product Cate", "Revenue", "Orders", "Units", "Page Views", "Product Views", "Reserve Now")
+kiosk.append$`Product Booking Wk` <- as.Date(kiosk.append$`Product Booking Wk`)
+app.kiosk.overall <- dplyr::bind_rows(kiosk.append, app.append)
+
+```
+
+```{r azure data - transactions for app & kiosk}
+library(odbc)
+con.microsoft.sql <- DBI::dbConnect(odbc::odbc(),
+                                    Driver   = "SQL Server",
+                                    Server   = "rcclanalyticssql.database.windows.net",
+                                    Database = "rcclanalytics",
+                                    UID      = "caiwenli",
+                                    PWD      = "Travel.Florida2019!",
+                                    Port     = 1433)
+
+dbo.mia <- paste("SELECT T.BRAND,
+       T.SHIP_CODE,
+       T.SAIL_DATE,
+       T.VOYAGE_RETURN_DATE,
+       CONCAT(T.SHIP_CODE,CONVERT(VARCHAR(10), T.SAIL_DATE, 120)) THE_KEY_T,
+       T.RDSS_PRODUCT_CODE,
+       T.ASR_BOOKING_ID,
+       T.ORDER_ID,
+       T.CRUISE_BOOKING_ID,
+       T.BUYER_ID,
+       T.TOTAL_PAYMENT_AMT,
+       T.PRODUCT_ID_CHAR,
+       T.PRODUCT_NAME,
+       T.PRODUCT_BOOKING_DTM,
+       T.CHANNEL,
+       T.REVENUE_PROD,
+       T.BOOKING_STATUS_DESC,  
+       T.OWNER_DESC,
+       V.SHIP_CODE,
+       V.SHIP_DEPARTURE_DATE,
+       CONCAT(V.SHIP_CODE,V.SHIP_DEPARTURE_DATE) THE_KEY_V,
+       V.PRODUCT_CODE,
+       V.VOYAGE_ORIGINATING_PORT_DESC,
+       V.ITINERARY_DESC,
+       V.ITINERARY_DAYS_QTY
+FROM RCCLAnalytics.dbo.MIA_MobileBookingsRevMod T
+LEFT JOIN RCCLAnalytics.dbo.VDC_VOYAGE V
+ON CONCAT(V.SHIP_CODE,V.SHIP_DEPARTURE_DATE) = CONCAT(T.SHIP_CODE,CONVERT(VARCHAR(10), T.SAIL_DATE, 120)) 
+WHERE T.PRODUCT_BOOKING_DTM BETWEEN GETDATE() - DATEPART(WEEKDAY, GETDATE())- 83 AND GETDATE() - DATEPART(WEEKDAY, GETDATE())
+      AND T.CHANNEL IN ('Excalibur App', 'Excalibur Kiosk')", sep="")
+
+dbo.mia.query <- dbGetQuery(con.microsoft.sql, dbo.mia)
+
+## dbo.mia.query <- tidyr::separate(dbo.mia.query, RDSS_PRODUCT_CODE, into = c("name", "value"), "(?<=[A-Z])(?=[0-9])") %>% 
+##   select(1:4, 6:17)
+
+## colnames(dbo.mia.query)[4] <- "DESTINATION_CODE"
+tbl_vars(dbo.mia.query)
+dbo.mia.query <- dbo.mia.query[,c(1:4, 6:18, 22:25)]
+dbo.mia.query <- dbo.mia.query %>% 
+  mutate(DAY_ONSHIP = as.Date(as.character(PRODUCT_BOOKING_DTM)) - as.Date(as.character(SAIL_DATE)) + 1,
+         VOYAGE_ID = paste0(dbo.mia.query$SHIP_CODE, sep = "_", dbo.mia.query$SAIL_DATE) )
+
+dbo.mia.query$DAY_ONSHIP <- as.numeric(dbo.mia.query$DAY_ONSHIP)
+
+```
+
+```{r YTD YOY Comparing}
+dbo.mia.ly.ytd <- paste("SELECT T.BRAND,
+       T.SHIP_CODE,
+       T.SAIL_DATE,
+       SUM(T.TOTAL_PAYMENT_AMT) TOTAL_REV,
+       T.CHANNEL,
+       DATEPART(wk,T.PRODUCT_BOOKING_DTM) WEEK_NUM,
+       DATEPART(year,T.PRODUCT_BOOKING_DTM) YEAR_NUM,
+       T.REVENUE_PROD,
+       T.BOOKING_STATUS_DESC,
+       T.OWNER_DESC
+FROM RCCLAnalytics.dbo.MIA_MobileBookingsRevMod T
+WHERE T.PRODUCT_BOOKING_DTM BETWEEN '2019-01-01' AND GETDATE() - DATEPART(WEEKDAY, GETDATE()) - 365
+      AND T.CHANNEL IN ('Excalibur App', 'Excalibur Kiosk')
+GROUP BY DATEPART(year,T.PRODUCT_BOOKING_DTM),
+         DATEPART(wk,T.PRODUCT_BOOKING_DTM),
+         T.CHANNEL,
+         T.BRAND,
+         T.SHIP_CODE,
+         T.SAIL_DATE,
+         T.REVENUE_PROD,
+         T.BOOKING_STATUS_DESC,
+         CONCAT(T.SHIP_CODE, T.SAIL_DATE),
+         T.OWNER_DESC", sep="")
+
+dbo.mia.ty.ytd <- paste("SELECT T.BRAND,
+       T.SHIP_CODE,
+       T.SAIL_DATE,
+       SUM(T.TOTAL_PAYMENT_AMT) TOTAL_REV,
+       T.CHANNEL,
+       DATEPART(wk,T.PRODUCT_BOOKING_DTM) WEEK_NUM,
+       DATEPART(year,T.PRODUCT_BOOKING_DTM) YEAR_NUM,
+       T.REVENUE_PROD,
+       T.BOOKING_STATUS_DESC,
+       T.OWNER_DESC
+FROM RCCLAnalytics.dbo.MIA_MobileBookingsRevMod T
+WHERE T.PRODUCT_BOOKING_DTM BETWEEN '2020-01-01' AND GETDATE() - DATEPART(WEEKDAY, GETDATE())
+      AND T.CHANNEL IN ('Excalibur App', 'Excalibur Kiosk')
+GROUP BY DATEPART(year,T.PRODUCT_BOOKING_DTM),
+         DATEPART(wk,T.PRODUCT_BOOKING_DTM),
+         T.CHANNEL,
+         T.BRAND,
+         T.SHIP_CODE,
+         T.SAIL_DATE,
+         T.REVENUE_PROD,
+         T.BOOKING_STATUS_DESC,
+         CONCAT(T.SHIP_CODE, T.SAIL_DATE),
+         T.OWNER_DESC", sep="")
+
+dbo.mia.ly.ytd.query <- dbGetQuery(con.microsoft.sql, dbo.mia.ly.ytd)
+dbo.mia.ty.ytd.query <- dbGetQuery(con.microsoft.sql, dbo.mia.ty.ytd)
+
+dbo.mia.ytd.query <- rbind(dbo.mia.ty.ytd.query, dbo.mia.ly.ytd.query)
+dbo.mia.ytd.query <- dbo.mia.ytd.query %>% 
+  mutate(VOYAGE_ID = paste0(dbo.mia.ytd.query$SHIP_CODE, sep = "_", dbo.mia.ytd.query$SAIL_DATE) )
+
+```
+
+```{r write all the data --- CHANGE THE PATH}
+write.csv(kiosk.ship.events.all,"C:/Users/7005773/Desktop/Work/App & Kiosk Weekly Report/Processed Data/kiosk.ship.events.all.csv")
+write.csv(kiosk.fallout.total,"C:/Users/7005773/Desktop/Work/App & Kiosk Weekly Report/Processed Data/kiosk.fallout.total.csv")
+
+write.csv(dbo.mia.query,"C:/Users/7005773/Desktop/Work/App & Kiosk Weekly Report/Processed Data/dbo.mia.query.csv")
+write.csv(dbo.mia.ytd.query,"C:/Users/7005773/Desktop/Work/App & Kiosk Weekly Report/Processed Data/dbo.mia.ytd.query.csv")
+
+write.csv(app.ship.product.total,"C:/Users/7005773/Desktop/Work/App & Kiosk Weekly Report/Processed Data/app.ship.product.total.csv")
+write.csv(app.ship.events.total,"C:/Users/7005773/Desktop/Work/App & Kiosk Weekly Report/Processed Data/app.ship.events.total.csv")
+write.csv(app.funnel.total,"C:/Users/7005773/Desktop/Work/App & Kiosk Weekly Report/Processed Data/app.funnel.total.csv")
+
+write.csv(app.kiosk.overall,"C:/Users/7005773/Desktop/Work/App & Kiosk Weekly Report/Processed Data/app.kiosk.overall.csv")
+```
+
+```{r dream query - azure data - transactions for app & kiosk --- DONT RUN}
+options(java.parameters = "-Xmx8g")
+library("RJDBC")
+library(RJDBC)
+drv <- JDBC("oracle.jdbc.OracleDriver",classPath="C:/users/7005773/Downloads/ojdbc6.jar")
+con.oracle <- dbConnect(drv, "jdbc:oracle:thin:@//dmmktgp_exa.rccl.com:1689/DMMKTGP.RCCL.COM", "DIGITALBI","PH4r}g`Qhh?N8S@<,)9Um:LjJB")
+
+pcp.transactional.level <- paste("SELECT T.SHIP_CODE,
+       T.SAIL_DATE,
+       TO_CHAR(T.PASSENGER_ID) PASSENGER_ID,
+       TO_CHAR(T.BOOKING_ID) AS CRUISE_BOOKING_ID,
+       CONCAT(CONCAT(CONCAT(T.BOOKING_ID, T.PASSENGER_ID), T.SAIL_DATE), T.SHIP_CODE) AS THE_KEY,
+       T.PRODUCT_ID,
+       T.ASR_BOOKING_ID,
+       T.ORDER_ID,
+       T.ADJUSTED_OWNER_DESC,
+       T.COMPONENT_NAME,
+       T.ASR_PRODUCT_BOOKING_DTM,
+       T.CHANNEL,
+       T.OWNER_DESC,
+       T.BOOKING_STATUS_NAME,
+       T.TOTAL_REVENUE_USD,
+       T.TOUR_DURATION_HR,
+       T.AMT_GUEST_PAID_BKC,
+       T1.BOOKING_ID,
+       T1.BRAND,
+       T1.RDSS_PRODUCT_CODE,
+       T1.META_PRODUCT_CODE,
+       T1.BOOKING_TYPE,
+       T1.NET_TICKET_REVENUE_USD,
+       T1.PASSENGER_ID,
+       CONCAT(CONCAT(CONCAT(T1.BOOKING_ID, T1.PASSENGER_ID), T1.SAIL_DATE), T1.SHIP_CODE) AS THE_KEY,
+       T1.SAIL_DATE,
+       T1.SAIL_NIGHTS,
+       T1.BOOKING_STATUS,
+       T1.PAX_AGE,
+       T1.PAX_CITIZENSHIP,
+       T1.PAX_DOCUMENTATION_LANGUAGE,
+       T1.PAX_GENDER_CODE,
+       T1.RATE_CAT_CLASS,
+       CASE WHEN T1.PAX_LOYALTY_NUMBER IS NOT NULL THEN 1 ELSE 0 END AS LOYALTY_STATUS
+FROM DIGITALBI.DREAM_PCP_ASR_DETAIL T
+LEFT JOIN DIGITALBI.DREAM_CRUISE_OBJECT T1
+ON CONCAT(CONCAT(CONCAT(T1.BOOKING_ID, T1.PASSENGER_ID), T1.SAIL_DATE), T1.SHIP_CODE) = CONCAT(CONCAT(CONCAT(T.BOOKING_ID, T.PASSENGER_ID), T.SAIL_DATE), T.SHIP_CODE) 
+WHERE T.CHANNEL IN ('Mobile App', 'Kiosk')
+      AND T.ASR_PRODUCT_BOOKING_DTM BETWEEN '2019-01-01' AND TRUNC(SYSDATE) - (TO_CHAR(SYSDATE, 'd')-1)", sep="")
+
+pcp.transactional.level.query <- dbGetQuery(con.oracle, pcp.transactional.level)
+
+```
