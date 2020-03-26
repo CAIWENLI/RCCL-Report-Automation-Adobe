@@ -485,7 +485,7 @@ con.microsoft.sql <- DBI::dbConnect(odbc::odbc(),
                                     Server   = "rcclanalyticssql.database.windows.net",
                                     Database = "rcclanalytics",
                                     UID      = "caiwenli",
-                                    PWD      = "Travel.Florida2019!",
+                                    PWD      = "xxx",
                                     Port     = 1433)
 
 dbo.mia <- paste("SELECT T.BRAND,
